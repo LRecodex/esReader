@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.2 — 2026-10-30
+
+- Accept usernames as well as email addresses in the esTory sign in form.
+
 ## 1.0.1 — 2026-10-30
 
 - Fixed a startup crash caused by the auto updater's CommonJS module import.
