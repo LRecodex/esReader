@@ -5,7 +5,19 @@ import { imageData, readerRequest, type Bookmark as SavedBookmark, type Chapter,
 
 type Preferences = { theme: 'dark' | 'paper' | 'light'; font: 'serif' | 'sans'; size: number; line: number; width: number; tint: string };
 const initialPreferences: Preferences = { theme: 'dark', font: 'serif', size: 19, line: 1.9, width: 680, tint: '#1e1e1e' };
-function readPrefs(): Preferences { try { return { ...initialPreferences, ...JSON.parse(localStorage.getItem('esreader.preferences') || '{}') }; } catch { return initialPreferences; } }
+function readPrefs(): Preferences {
+  try {
+    const saved = JSON.parse(localStorage.getItem('esreader.preferences') || '{}');
+    return {
+      theme: ['dark', 'paper', 'light'].includes(saved.theme) ? saved.theme : initialPreferences.theme,
+      font: ['serif', 'sans'].includes(saved.font) ? saved.font : initialPreferences.font,
+      size: Number.isFinite(saved.size) ? Math.max(14, Math.min(30, saved.size)) : initialPreferences.size,
+      line: Number.isFinite(saved.line) ? Math.max(1.4, Math.min(2.5, saved.line)) : initialPreferences.line,
+      width: Number.isFinite(saved.width) ? Math.max(320, Math.min(900, saved.width)) : initialPreferences.width,
+      tint: typeof saved.tint === 'string' && /^#[\da-f]{6}$/i.test(saved.tint) ? saved.tint : initialPreferences.tint,
+    };
+  } catch { return initialPreferences; }
+}
 function readLast(): { story?: string; chapter?: string } { try { return JSON.parse(localStorage.getItem('esreader.last') || '{}'); } catch { return {}; } }
 
 export default function App() {
@@ -27,6 +39,8 @@ export default function App() {
   const [bookmarkSaving, setBookmarkSaving] = useState(false);
   const progressRef = useRef(0);
   const progressTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const storyRequest = useRef(0);
+  const chapterRequest = useRef(0);
   const [account, setAccount] = useState<{ id: string; email: string; name: string } | null>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -73,17 +87,21 @@ export default function App() {
   }, []);
 
   const openStory = useCallback(async (selected: StorySummary, startChapter?: string, startPosition?: number) => {
+    const requestId = ++storyRequest.current;
+    chapterRequest.current++;
     setStory(selected); setChapter(null); setError(''); setCover('');
     try {
       const full = await readerRequest<StorySummary>(`/api/reader/stories/${selected.id}`);
+      if (requestId !== storyRequest.current) return;
       setStory(full);
-      if (full.cover) imageData(full.cover).then(setCover).catch(() => {});
+      if (full.cover) imageData(full.cover).then(value => { if (requestId === storyRequest.current) setCover(value); }).catch(() => {});
       const target = startChapter ? full.chapters.find(item => item.id === startChapter) : undefined;
       if (target) await openChapter(full, target.id, target.id === startChapter ? startPosition : undefined);
     } catch (err) { setError((err as Error).message); }
   }, []);
 
   const openChapter = useCallback(async (selected: StorySummary, id: string, startPosition?: number) => {
+    const requestId = ++chapterRequest.current;
     setChapterId(id); setChapter(null); setError(''); setDrawer(null); setProgress(0);
     localStorage.setItem('esreader.last', JSON.stringify({ story: selected.id, chapter: id }));
     const key = `esreader.progress.${selected.id}.${id}`;
@@ -91,8 +109,10 @@ export default function App() {
     progressRef.current = savedPosition;
     localStorage.setItem(key, String(savedPosition));
     setProgress(savedPosition);
-    try { setChapter(await readerRequest<Chapter>(`/api/reader/stories/${selected.id}/chapters/${id}`)); }
-    catch (err) { setError((err as Error).message); }
+    try {
+      const result = await readerRequest<Chapter>(`/api/reader/stories/${selected.id}/chapters/${id}`);
+      if (requestId === chapterRequest.current) setChapter(result);
+    } catch (err) { if (requestId === chapterRequest.current) setError((err as Error).message); }
   }, []);
 
   useEffect(() => { void (async () => { const user = await window.desktop.session(); setAccount(user); if (user) await loadStories(true); else setBusy(false); })(); }, [loadStories]);
@@ -160,12 +180,14 @@ export default function App() {
     } catch (err) { setError((err as Error).message); }
   };
 
+  const closeStory = () => { storyRequest.current++; chapterRequest.current++; setStory(null); setChapter(null); setError(''); };
+
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
-      if (event.target instanceof HTMLInputElement) return;
-      if (event.key === 'Escape') { if (drawer) setDrawer(null); else if (story) { setStory(null); setChapter(null); } }
-      if (event.key === 'ArrowRight' && story && chapter) move(1);
-      if (event.key === 'ArrowLeft' && story && chapter) move(-1);
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || (event.target instanceof HTMLElement && event.target.isContentEditable)) return;
+      if (event.key === 'Escape') { if (drawer) setDrawer(null); else if (story) { storyRequest.current++; chapterRequest.current++; setStory(null); setChapter(null); } }
+      if (event.key === 'ArrowRight' && story && chapter && !event.altKey && !event.ctrlKey && !event.metaKey) { event.preventDefault(); move(1); }
+      if (event.key === 'ArrowLeft' && story && chapter && !event.altKey && !event.ctrlKey && !event.metaKey) { event.preventDefault(); move(-1); }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'b') { event.preventDefault(); setNavVisible(value => !value); }
     };
     window.addEventListener('keydown', keydown); return () => window.removeEventListener('keydown', keydown);
@@ -194,7 +216,7 @@ export default function App() {
     {story && chapter ? <>
       <div className="reading-progress"><span style={{ width: `${progress * 100}%` }} /></div>
       <section className="reading-top">
-        <button className="quiet-button back" onClick={() => { setStory(null); setChapter(null); setError(''); }}><ArrowLeft size={15} /> Library</button>
+        <button className="quiet-button back" onClick={closeStory}><ArrowLeft size={15} /> Library</button>
         <button className="quiet-button story-picker" title="Browse chapters" onClick={() => setDrawer(drawer === 'chapters' ? null : 'chapters')}>{story.title}<ChevronDown size={14} /></button>
         <button className="quiet-button" title="Save this place" aria-label="Save this place" disabled={bookmarkSaving} onClick={() => void saveBookmark()}><BookmarkPlus size={16} /></button>
         <button className="quiet-button" title={`Saved places (${bookmarks.length})`} aria-label="Saved places" onClick={() => setDrawer('bookmarks')}><Bookmark size={16} /><span className="bookmark-count">{bookmarks.length}</span></button>
@@ -211,7 +233,7 @@ export default function App() {
       </article>}
       <footer className="reader-footer"><button onClick={() => setDrawer('chapters')}>Chapter {chapter.number} of {story.chapters.length} <ChevronDown size={13} /></button><span>{progressError ? 'Progress not synced' : `${Math.round(progress * 100)}%`}</span><div><button disabled={chapterIndex <= 0} onClick={() => move(-1)}><ArrowLeft size={14} /></button><button disabled={chapterIndex >= story.chapters.length - 1} onClick={() => move(1)}><ArrowRight size={14} /></button></div></footer>
     </> : story ? <>
-      <section className="story-intro"><button className="quiet-button back" onClick={() => { setStory(null); setChapter(null); }}><ArrowLeft size={15} /> Library</button>
+      <section className="story-intro"><button className="quiet-button back" onClick={closeStory}><ArrowLeft size={15} /> Library</button>
         {cover && <img className="intro-cover" src={cover} alt="" />}
         <span className="overline">A STORY TO GET LOST IN</span><h1>{story.title}</h1>{story.subtitle && <h2>{story.subtitle}</h2>}<p>{story.synopsis}</p><div className="story-meta">{story.chapters.length} published chapters <span>·</span> {story.language}</div>
         <button className="begin-button" disabled={!story.chapters.length} onClick={() => void openChapter(story, story.chapters[0].id)}><BookOpen size={16} /> Begin reading <ArrowRight size={15} /></button>

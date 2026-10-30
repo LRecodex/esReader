@@ -1,6 +1,7 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, screen } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { registerAutoUpdater } from './updater.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -8,10 +9,32 @@ const API_ORIGIN = 'https://estory.fauzulazim.com';
 let win: BrowserWindow | null = null;
 let sessionCookie = '';
 
+function savedWindowBounds(): { width: number; height: number; x?: number; y?: number } {
+  const fallback = { width: 410, height: 900 };
+  try {
+    const value = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'window.json'), 'utf8'));
+    if (!Number.isFinite(value.width) || !Number.isFinite(value.height)) return fallback;
+    const width = Math.max(320, Math.min(1800, Math.round(value.width)));
+    const height = Math.max(420, Math.min(1400, Math.round(value.height)));
+    if (!Number.isFinite(value.x) || !Number.isFinite(value.y)) return { width, height };
+    const display = screen.getDisplayMatching({ x: value.x, y: value.y, width, height });
+    const area = display.workArea;
+    return { width: Math.min(width, area.width), height: Math.min(height, area.height), x: Math.max(area.x, Math.min(Math.round(value.x), area.x + area.width - Math.min(width, area.width))), y: Math.max(area.y, Math.min(Math.round(value.y), area.y + area.height - Math.min(height, area.height))) };
+  } catch { return fallback; }
+}
+
+function trusted(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): boolean {
+  const url = event.senderFrame?.url ?? '';
+  if (process.env.VITE_DEV_SERVER_URL) {
+    try { return new URL(url).origin === new URL(process.env.VITE_DEV_SERVER_URL).origin; } catch { return false; }
+  }
+  return url === pathToFileURL(path.join(here, '../dist/index.html')).href;
+}
+
 function createWindow() {
+  const bounds = savedWindowBounds();
   win = new BrowserWindow({
-    width: 410,
-    height: 900,
+    ...bounds,
     minWidth: 320,
     minHeight: 420,
     backgroundColor: '#1e1e1e',
@@ -34,12 +57,22 @@ function createWindow() {
     if (url.startsWith('https://estory.fauzulazim.com/')) void shell.openExternal(url);
     return { action: 'deny' };
   });
+  win.webContents.on('will-navigate', (event, url) => {
+    const trustedUrl = process.env.VITE_DEV_SERVER_URL ?? 'file://';
+    if (!url.startsWith(trustedUrl)) event.preventDefault();
+  });
+  win.on('close', () => {
+    if (!win || win.isMinimized()) return;
+    const { x, y, width, height } = win.getBounds();
+    try { fs.writeFileSync(path.join(app.getPath('userData'), 'window.json'), JSON.stringify({ x, y, width, height })); } catch { /* Window state is optional. */ }
+  });
   const devUrl = process.env.VITE_DEV_SERVER_URL;
   if (devUrl) void win.loadURL(devUrl);
   else void win.loadFile(path.join(here, '../dist/index.html'));
 }
 
 ipcMain.handle('auth:login', async (_event, credentials: unknown) => {
+  if (!trusted(_event)) throw new Error('Untrusted application request.');
   if (!credentials || typeof credentials !== 'object') throw new Error('Enter your esTory sign-in details.');
   const { email, password } = credentials as { email?: unknown; password?: unknown };
   if (typeof email !== 'string' || typeof password !== 'string' || !email.trim() || !password) throw new Error('Enter your email and password.');
@@ -53,18 +86,21 @@ ipcMain.handle('auth:login', async (_event, credentials: unknown) => {
   return body;
 });
 
-ipcMain.handle('auth:session', async () => {
+ipcMain.handle('auth:session', async (event) => {
+  if (!trusted(event)) throw new Error('Untrusted application request.');
   if (!sessionCookie) return null;
   const response = await fetch(`${API_ORIGIN}/api/auth/me`, { headers: { Cookie: sessionCookie, Accept: 'application/json' } });
   if (!response.ok) { sessionCookie = ''; return null; }
   return response.json();
 });
-ipcMain.handle('auth:logout', async () => {
+ipcMain.handle('auth:logout', async (event) => {
+  if (!trusted(event)) throw new Error('Untrusted application request.');
   if (sessionCookie) await fetch(`${API_ORIGIN}/api/auth/logout`, { method: 'POST', headers: { Cookie: sessionCookie, Origin: API_ORIGIN, Accept: 'application/json' } }).catch(() => {});
   sessionCookie = '';
 });
 
 ipcMain.handle('reader:request', async (_event, pathValue: unknown, options?: { method?: unknown; body?: unknown }) => {
+  if (!trusted(_event)) throw new Error('Untrusted application request.');
   if (typeof pathValue !== 'string' || !/^\/api\/(?:reader\/stories(?:\/|\?|$)|stories\/[^/]+\/cover(?:\?|$))/.test(pathValue)) {
     throw new Error('Only published reader requests are available.');
   }
@@ -102,13 +138,14 @@ ipcMain.handle('reader:request', async (_event, pathValue: unknown, options?: { 
 
 app.whenReady().then(() => {
   registerAutoUpdater();
-  ipcMain.handle('app:version', () => app.getVersion());
+ipcMain.handle('app:version', (event) => { if (!trusted(event)) throw new Error('Untrusted application request.'); return app.getVersion(); });
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 
 ipcMain.on('window:action', (event, action: unknown) => {
+  if (!trusted(event)) return;
   const target = BrowserWindow.fromWebContents(event.sender);
   if (!target || typeof action !== 'string') return;
   if (action === 'minimize') target.minimize();
@@ -116,5 +153,6 @@ ipcMain.on('window:action', (event, action: unknown) => {
   if (action === 'close') target.close();
 });
 ipcMain.on('external:open', (_event, url: unknown) => {
+  if (!trusted(_event)) return;
   if (url === 'https://estory.fauzulazim.com/') void shell.openExternal(url);
 });

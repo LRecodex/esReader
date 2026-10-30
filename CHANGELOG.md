@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.5 (2026-10-30)
+
+- Ignore outdated story and chapter responses when navigating quickly.
+- Validate saved reading appearance preferences before applying them.
+- Restore the window's size and position when esReader starts, keeping it visible after display changes.
+- Restrict privileged IPC calls to the application renderer and block navigation away from the reader.
+- Prevent reader arrow-key shortcuts from interfering with modified shortcuts or browser scrolling.
+
 ## 1.0.4 (2026-10-30)
 
 - Sync reading position to esTory and resume from the last synced chapter and percentage.
