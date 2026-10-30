@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1 — 2026-10-30
+
+- Fixed a startup crash caused by the auto updater's CommonJS module import.
+
 ## 1.0.0 — 2026-10-30
 
 - Added esTory account sign in for the authenticated reading room.

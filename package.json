@@ -1,6 +1,6 @@
 {
   "name": "esreader-desktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "description": "A quiet desktop reader for published Cerita stories.",
@@ -53,7 +53,11 @@
       "icon": "assets/esreader-icon.ico",
       "artifactName": "esReader-Setup-${version}.${ext}"
     },
-    "publish": {"provider": "github", "owner": "LRecodex", "repo": "esReader"},
+    "publish": {
+      "provider": "github",
+      "owner": "LRecodex",
+      "repo": "esReader"
+    },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
