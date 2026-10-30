@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('desktop', {
   session: () => ipcRenderer.invoke('auth:session'),
   logout: () => ipcRenderer.invoke('auth:logout'),
   openSite: () => ipcRenderer.send('external:open', 'https://estory.fauzulazim.com/'),
+  version: () => ipcRenderer.invoke('app:version'),
   update: {
     getStatus: () => ipcRenderer.invoke('update:getStatus'),
     check: () => ipcRenderer.invoke('update:check'),

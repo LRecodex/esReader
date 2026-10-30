@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { ArrowLeft, ArrowRight, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Download, Minus, Moon, PanelLeftClose, RefreshCw, Search, Settings2, Sun, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Download, Minus, Moon, PanelLeftClose, PanelLeftOpen, RefreshCw, Search, Settings2, Sun, X } from 'lucide-react';
 import { imageData, readerRequest, type Chapter, type ChapterSummary, type StorySummary } from './api';
 
 type Preferences = { theme: 'dark' | 'paper' | 'light'; font: 'serif' | 'sans'; size: number; line: number; width: number; tint: string };
@@ -14,6 +14,8 @@ export default function App() {
   const [chapterId, setChapterId] = useState('');
   const [chapter, setChapter] = useState<Chapter | null>(null);
   const [cover, setCover] = useState('');
+  const [storyCovers, setStoryCovers] = useState<Record<string, string>>({});
+  const [appVersion, setAppVersion] = useState('');
   const [prefs, setPrefs] = useState(readPrefs);
   const [navVisible, setNavVisible] = useState(true);
   const [drawer, setDrawer] = useState<'chapters' | 'settings' | null>(null);
@@ -33,6 +35,10 @@ export default function App() {
     try {
       const result = await readerRequest<StorySummary[]>('/api/reader/stories');
       setStories(result);
+      void Promise.all(result.map(async item => {
+        if (!item.cover) return null;
+        try { return [item.id, await imageData(item.cover)] as const; } catch { return null; }
+      })).then(entries => setStoryCovers(Object.fromEntries(entries.filter((entry): entry is readonly [string, string] => entry !== null))));
       if (resume && result.length) {
         const last = readLast();
         const saved = result.find(item => item.id === last.story);
@@ -64,6 +70,7 @@ export default function App() {
 
   useEffect(() => { void (async () => { const user = await window.desktop.session(); setAccount(user); if (user) await loadStories(true); else setBusy(false); })(); }, [loadStories]);
   useEffect(() => { void window.desktop.update.getStatus().then(setUpdateStatus); return window.desktop.update.onStatus(setUpdateStatus); }, []);
+  useEffect(() => { void window.desktop.version().then(setAppVersion); }, []);
   useEffect(() => { localStorage.setItem('esreader.preferences', JSON.stringify(prefs)); }, [prefs]);
   useEffect(() => { localStorage.setItem('esreader.bookmarks', JSON.stringify(bookmarks)); }, [bookmarks]);
   useEffect(() => {
@@ -116,12 +123,12 @@ export default function App() {
 
   return <main className={`app theme-${prefs.theme}`} style={style}>
     <header className={`titlebar ${navVisible ? '' : 'titlebar-hidden'}`} onMouseEnter={() => !navVisible && setNavVisible(true)}>
-      <div className="drag-space"><BookOpen size={14} /><span>esReader</span>{story && <><span className="crumb-sep">/</span><span className="window-story">{story.title}</span></>}</div>
+      <div className="drag-space"><BookOpen size={14} /><span>esReader</span><span className="app-version">v{appVersion || '…'}</span>{story && <><span className="crumb-sep">/</span><span className="window-story">{story.title}</span></>}</div>
       <button className="chrome-button update-button" title={updateLabel} aria-label={updateLabel} onClick={() => void updateAction()} disabled={['checking', 'downloading', 'unsupported'].includes(updateStatus.status)}>{updateStatus.status === 'available' || updateStatus.status === 'downloaded' ? <Download size={14} /> : <RefreshCw size={13} className={updateStatus.status === 'checking' ? 'spin' : ''} />}</button>
       <button className="chrome-button" title="Hide reader bar · Ctrl+B" onClick={() => setNavVisible(false)}><PanelLeftClose size={15} /></button>
       <div className="window-actions"><button title="Minimize" onClick={() => window.desktop.windowAction('minimize')}><Minus size={14} /></button><button title="Maximize" onClick={() => window.desktop.windowAction('toggle-maximize')}><span className="maximize-icon" /></button><button title="Close" onClick={() => window.desktop.windowAction('close')}><X size={15} /></button></div>
     </header>
-    {!navVisible && <button className="reveal-bar" title="Show reader bar" onClick={() => setNavVisible(true)} onMouseEnter={() => setNavVisible(true)} />}
+    {!navVisible && <button className="show-toolbar" title="Show toolbar (Ctrl+B)" onClick={() => setNavVisible(true)}><PanelLeftOpen size={14} /><span>Show toolbar</span></button>}
     {!account ? <section className="login-panel"><span className="overline">YOUR ESTORY LIBRARY</span><h1>Welcome back</h1><p>Sign in with your esTory account to open your reading room.</p><form onSubmit={signIn}><label>Username or email<input type="text" autoComplete="username" required value={email} onChange={event => setEmail(event.target.value)} /></label><label>Password<input type="password" autoComplete="current-password" required value={password} onChange={event => setPassword(event.target.value)} /></label>{error && <p className="login-error">{error}</p>}<button className="begin-button" disabled={signingIn}>{signingIn ? 'Signing in…' : 'Sign in'} <ArrowRight size={15} /></button></form><button className="login-link" onClick={() => window.desktop.openSite()}>Open esTory in your browser</button></section> : <>
     {story && chapter ? <>
       <div className="reading-progress"><span style={{ width: `${progress * 100}%` }} /></div>
@@ -151,10 +158,10 @@ export default function App() {
     </> : <>
       <section className="library-head"><div><span className="overline">PUBLISHED STORIES</span><h1>Reading room</h1></div><label className="search"><Search size={15} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Find a story" /></label></section>
       {busy ? <div className="quiet-state">Opening the reading room…</div> : error ? <div className="quiet-state error-state"><p>{error}</p><button className="outline-button" onClick={() => void loadStories()}>Try again <ArrowRight size={14} /></button></div> : filtered.length ? <section className="story-list">{filtered.map(item => <button className="story-card" key={item.id} onClick={() => void openStory(item)}>
-          <span className="card-cover" aria-hidden="true"><span className="cover-mark">✦</span><span>{item.title}</span></span>
+          <span className={`card-cover ${storyCovers[item.id] ? 'has-cover' : ''}`} aria-hidden="true">{storyCovers[item.id] ? <img src={storyCovers[item.id]} alt="" /> : <><BookOpen size={16} className="cover-mark" /><span>{item.title}</span></>}</span>
           <span className="card-copy"><strong>{item.title}</strong><small>{item.genres?.join(' · ') || item.language}</small><small>{item.chapters.length} published {item.chapters.length === 1 ? 'chapter' : 'chapters'}</small></span><ArrowRight size={15} className="card-arrow" />
         </button>)}</section> : <div className="quiet-state">No published stories found.</div>}
-      <div className="library-foot">estory.fauzulazim.com <span>·</span> {stories.length} stories</div>
+      <div className="library-foot"><span>esReader v{appVersion || '…'}</span><span>·</span><span>estory.fauzulazim.com</span><span>·</span><span>{stories.length} stories</span></div>
     </>}
     {error && story && <div className="inline-error"><span>{error}</span><button onClick={() => setError('')} aria-label="Dismiss"><X size={13} /></button></div>}
     {drawer && <><button className="drawer-shade" aria-label="Close panel" onClick={() => setDrawer(null)} /><aside className="drawer"><header><h2>{drawer === 'settings' ? 'Reading appearance' : 'Chapters'}</h2><button className="quiet-button" onClick={() => setDrawer(null)} aria-label="Close"><X size={16} /></button></header>

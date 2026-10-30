@@ -9,6 +9,7 @@ interface Window {
     session(): Promise<{ id: string; email: string; name: string } | null>;
     logout(): Promise<void>;
     openSite(): void;
+    version(): Promise<string>;
     update: {
       getStatus(): Promise<UpdateStatus>;
       check(): Promise<UpdateStatus>;

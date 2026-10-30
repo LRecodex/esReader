@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.3 — 2026-10-30
+
+- Added an always-visible toolbar restore button when the reader bar is collapsed.
+- Displayed the installed app version in the toolbar and library footer.
+- Loaded uploaded story cover images in the library cards, with cleaner placeholders when a story has no cover.
+
 ## 1.0.2 — 2026-10-30
 
 - Accept usernames as well as email addresses in the esTory sign in form.

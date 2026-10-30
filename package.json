@@ -1,6 +1,6 @@
 {
   "name": "esreader-desktop",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "type": "module",
   "description": "A quiet desktop reader for published Cerita stories.",
