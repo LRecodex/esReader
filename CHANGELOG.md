@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.4 (2026-10-30)
+
+- Sync reading position to esTory and resume from the last synced chapter and percentage.
+- Save multiple bookmarks per story, each with its own chapter and percentage, and jump to or remove saved places.
+- Preserve existing device bookmarks by migrating them to the esTory account.
+- Open a story overview when selecting a library card so readers can choose where to begin.
+
 ## 1.0.3 — 2026-10-30
 
 - Added an always-visible toolbar restore button when the reader bar is collapsed.

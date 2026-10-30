@@ -64,14 +64,31 @@ ipcMain.handle('auth:logout', async () => {
   sessionCookie = '';
 });
 
-ipcMain.handle('reader:request', async (_event, pathValue: unknown) => {
+ipcMain.handle('reader:request', async (_event, pathValue: unknown, options?: { method?: unknown; body?: unknown }) => {
   if (typeof pathValue !== 'string' || !/^\/api\/(?:reader\/stories(?:\/|\?|$)|stories\/[^/]+\/cover(?:\?|$))/.test(pathValue)) {
     throw new Error('Only published reader requests are available.');
   }
+  const method = options?.method ?? 'GET';
+  if (!['GET', 'PUT', 'POST', 'DELETE'].includes(String(method))) throw new Error('Unsupported reader request.');
+  const route = pathValue.split('?')[0];
+  const collectionRoute = route === '/api/reader/stories';
+  const storyRoute = /^\/api\/reader\/stories\/[^/]+(?:\/chapters\/[^/]+)?$/.test(route);
+  const progressRoute = /^\/api\/reader\/stories\/[^/]+\/progress$/.test(route);
+  const bookmarksRoute = /^\/api\/reader\/stories\/[^/]+\/bookmarks(?:\/[^/]+)?$/.test(route);
+  const coverRoute = /^\/api\/stories\/[^/]+\/cover$/.test(route);
+  const methodAllowed = (collectionRoute || storyRoute || coverRoute) ? method === 'GET'
+    : progressRoute ? ['GET', 'PUT'].includes(String(method))
+    : bookmarksRoute ? (route.endsWith('/bookmarks') ? ['GET', 'POST'].includes(String(method)) : method === 'DELETE')
+    : false;
+  if (!methodAllowed) throw new Error('This reader action is not available.');
   if (!sessionCookie) throw new Error('Sign in to your esTory account to open your reading room.');
   const url = new URL(pathValue, API_ORIGIN);
   if (url.origin !== API_ORIGIN) throw new Error('Invalid reader request.');
-  const response = await fetch(url, { headers: { Accept: 'application/json', Cookie: sessionCookie } });
+  const response = await fetch(url, {
+    method: String(method),
+    headers: { Accept: 'application/json', Cookie: sessionCookie, ...(method !== 'GET' ? { Origin: API_ORIGIN } : {}), ...(options?.body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
+    ...(options?.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
+  });
   const contentType = response.headers.get('content-type') ?? '';
   if (!response.ok) {
     const body = contentType.includes('application/json') ? await response.json().catch(() => null) : null;

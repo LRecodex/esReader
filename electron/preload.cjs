@@ -1,7 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('desktop', {
-  request: (path) => ipcRenderer.invoke('reader:request', path),
+  request: (path, options) => ipcRenderer.invoke('reader:request', path, options),
   login: (credentials) => ipcRenderer.invoke('auth:login', credentials),
   session: () => ipcRenderer.invoke('auth:session'),
   logout: () => ipcRenderer.invoke('auth:logout'),

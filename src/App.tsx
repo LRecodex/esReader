@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { ArrowLeft, ArrowRight, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Download, Minus, Moon, PanelLeftClose, PanelLeftOpen, RefreshCw, Search, Settings2, Sun, X } from 'lucide-react';
-import { imageData, readerRequest, type Chapter, type ChapterSummary, type StorySummary } from './api';
+import { ArrowLeft, ArrowRight, BookOpen, Bookmark, BookmarkPlus, ChevronDown, ChevronLeft, ChevronRight, Download, Minus, Moon, PanelLeftClose, PanelLeftOpen, RefreshCw, Search, Settings2, Sun, Trash2, X } from 'lucide-react';
+import { imageData, readerRequest, type Bookmark as SavedBookmark, type Chapter, type ChapterSummary, type StorySummary } from './api';
 
 type Preferences = { theme: 'dark' | 'paper' | 'light'; font: 'serif' | 'sans'; size: number; line: number; width: number; tint: string };
 const initialPreferences: Preferences = { theme: 'dark', font: 'serif', size: 19, line: 1.9, width: 680, tint: '#1e1e1e' };
@@ -18,23 +18,44 @@ export default function App() {
   const [appVersion, setAppVersion] = useState('');
   const [prefs, setPrefs] = useState(readPrefs);
   const [navVisible, setNavVisible] = useState(true);
-  const [drawer, setDrawer] = useState<'chapters' | 'settings' | null>(null);
+  const [drawer, setDrawer] = useState<'chapters' | 'bookmarks' | 'settings' | null>(null);
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState('');
   const [progress, setProgress] = useState(0);
+  const [progressError, setProgressError] = useState(false);
+  const [bookmarkSaving, setBookmarkSaving] = useState(false);
+  const progressRef = useRef(0);
+  const progressTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [account, setAccount] = useState<{ id: string; email: string; name: string } | null>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [signingIn, setSigningIn] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ status: 'idle', currentVersion: '1.0.0' });
-  const [bookmarks, setBookmarks] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('esreader.bookmarks') || '[]'); } catch { return []; } });
+  const [bookmarks, setBookmarks] = useState<SavedBookmark[]>([]);
 
   const loadStories = useCallback(async (resume = false) => {
     setBusy(true); setError('');
     try {
       const result = await readerRequest<StorySummary[]>('/api/reader/stories');
       setStories(result);
+      try {
+        const legacy = JSON.parse(localStorage.getItem('esreader.bookmarks') || '[]') as string[];
+        const migrated = new Set<string>(JSON.parse(localStorage.getItem('esreader.bookmarks.migrated') || '[]'));
+        const done = await Promise.all(legacy.filter(key => !migrated.has(key)).map(async key => {
+          const [storyId, chapterId] = key.split(':');
+          const oldStory = result.find(item => item.id === storyId);
+          const oldChapter = oldStory?.chapters.find(item => item.id === chapterId);
+          if (!oldStory || !oldChapter) return null;
+          const position = Math.max(0, Math.min(1, Number(localStorage.getItem(`esreader.progress.${storyId}.${chapterId}`) || 0)));
+          try {
+            await readerRequest(`/api/reader/stories/${storyId}/bookmarks`, { method: 'POST', body: { chapterId, position, label: `Chapter ${oldChapter.number} · ${Math.round(position * 100)}%` } });
+            return key;
+          } catch { return null; }
+        }));
+        for (const key of done) if (key) migrated.add(key);
+        localStorage.setItem('esreader.bookmarks.migrated', JSON.stringify([...migrated]));
+      } catch { /* Ignore malformed legacy device data. */ }
       void Promise.all(result.map(async item => {
         if (!item.cover) return null;
         try { return [item.id, await imageData(item.cover)] as const; } catch { return null; }
@@ -42,28 +63,34 @@ export default function App() {
       if (resume && result.length) {
         const last = readLast();
         const saved = result.find(item => item.id === last.story);
-        if (saved) await openStory(saved, last.chapter);
+        if (saved) {
+          const remoteProgress = saved.progress?.[0];
+          await openStory(saved, remoteProgress?.chapterId || last.chapter, remoteProgress?.chapterId ? remoteProgress.position : undefined);
+        }
       }
     } catch (err) { setError((err as Error).message || 'Could not reach estory.fauzulazim.com. Check your connection and try again.'); }
     finally { setBusy(false); }
   }, []);
 
-  const openStory = useCallback(async (selected: StorySummary, startChapter?: string) => {
+  const openStory = useCallback(async (selected: StorySummary, startChapter?: string, startPosition?: number) => {
     setStory(selected); setChapter(null); setError(''); setCover('');
     try {
       const full = await readerRequest<StorySummary>(`/api/reader/stories/${selected.id}`);
       setStory(full);
       if (full.cover) imageData(full.cover).then(setCover).catch(() => {});
-      const target = full.chapters.find(item => item.id === startChapter) ?? full.chapters[0];
-      if (target) await openChapter(full, target.id);
+      const target = startChapter ? full.chapters.find(item => item.id === startChapter) : undefined;
+      if (target) await openChapter(full, target.id, target.id === startChapter ? startPosition : undefined);
     } catch (err) { setError((err as Error).message); }
   }, []);
 
-  const openChapter = useCallback(async (selected: StorySummary, id: string) => {
+  const openChapter = useCallback(async (selected: StorySummary, id: string, startPosition?: number) => {
     setChapterId(id); setChapter(null); setError(''); setDrawer(null); setProgress(0);
     localStorage.setItem('esreader.last', JSON.stringify({ story: selected.id, chapter: id }));
     const key = `esreader.progress.${selected.id}.${id}`;
-    setProgress(Number(localStorage.getItem(key) || 0));
+    const savedPosition = Math.max(0, Math.min(1, startPosition ?? Number(localStorage.getItem(key) || 0)));
+    progressRef.current = savedPosition;
+    localStorage.setItem(key, String(savedPosition));
+    setProgress(savedPosition);
     try { setChapter(await readerRequest<Chapter>(`/api/reader/stories/${selected.id}/chapters/${id}`)); }
     catch (err) { setError((err as Error).message); }
   }, []);
@@ -72,17 +99,35 @@ export default function App() {
   useEffect(() => { void window.desktop.update.getStatus().then(setUpdateStatus); return window.desktop.update.onStatus(setUpdateStatus); }, []);
   useEffect(() => { void window.desktop.version().then(setAppVersion); }, []);
   useEffect(() => { localStorage.setItem('esreader.preferences', JSON.stringify(prefs)); }, [prefs]);
-  useEffect(() => { localStorage.setItem('esreader.bookmarks', JSON.stringify(bookmarks)); }, [bookmarks]);
+  useEffect(() => {
+    if (!story) { setBookmarks([]); return; }
+    let current = true;
+    void readerRequest<SavedBookmark[]>(`/api/reader/stories/${story.id}/bookmarks`).then(result => { if (current) setBookmarks(result); }).catch(err => { if (current) setError((err as Error).message); });
+    return () => { current = false; };
+  }, [story?.id]);
   useEffect(() => {
     if (!story || !chapter) return;
+    let latestPosition = progressRef.current;
     const update = () => {
       const total = document.documentElement.scrollHeight - window.innerHeight;
       const value = total > 0 ? Math.min(1, Math.max(0, window.scrollY / total)) : 0;
       setProgress(value);
+      progressRef.current = value;
+      latestPosition = value;
       localStorage.setItem(`esreader.progress.${story.id}.${chapter.id}`, String(value));
+      clearTimeout(progressTimer.current);
+      progressTimer.current = setTimeout(() => {
+        void readerRequest(`/api/reader/stories/${story.id}/progress`, { method: 'PUT', body: { chapterId: chapter.id, position: value } })
+          .then(() => setProgressError(false)).catch(() => setProgressError(true));
+      }, 800);
     };
     window.addEventListener('scroll', update, { passive: true });
-    return () => window.removeEventListener('scroll', update);
+    return () => {
+      window.removeEventListener('scroll', update);
+      clearTimeout(progressTimer.current);
+      void readerRequest(`/api/reader/stories/${story.id}/progress`, { method: 'PUT', body: { chapterId: chapter.id, position: latestPosition } })
+        .then(() => setProgressError(false)).catch(() => setProgressError(true));
+    };
   }, [story?.id, chapter?.id, chapter]);
   useEffect(() => {
     if (!story || !chapter) return;
@@ -96,8 +141,24 @@ export default function App() {
   const chapterIndex = story?.chapters.findIndex(item => item.id === chapterId) ?? -1;
   const filtered = useMemo(() => stories.filter(item => `${item.title} ${item.synopsis} ${item.genres?.join(' ')}`.toLowerCase().includes(query.toLowerCase())), [stories, query]);
   const move = (offset: number) => { if (!story) return; const target = story.chapters[chapterIndex + offset]; if (target) void openChapter(story, target.id); };
-  const toggleBookmark = () => { if (!story || !chapter) return; const id = `${story.id}:${chapter.id}`; setBookmarks(items => items.includes(id) ? items.filter(item => item !== id) : [...items, id]); };
-  const bookmarked = Boolean(story && chapter && bookmarks.includes(`${story.id}:${chapter.id}`));
+  const saveBookmark = async () => {
+    if (!story || !chapter || bookmarkSaving) return;
+    setBookmarkSaving(true);
+    const label = `Chapter ${chapter.number} · ${Math.round(progressRef.current * 100)}%`;
+    try {
+      const saved = await readerRequest<SavedBookmark>(`/api/reader/stories/${story.id}/bookmarks`, { method: 'POST', body: { chapterId: chapter.id, position: progressRef.current, label } });
+      setBookmarks(items => [saved, ...items]);
+    } catch (err) { setError((err as Error).message); }
+    finally { setBookmarkSaving(false); }
+  };
+  const openBookmark = (item: SavedBookmark) => { if (!story) return; void openChapter(story, item.chapterId, item.position); };
+  const deleteBookmark = async (item: SavedBookmark) => {
+    if (!story) return;
+    try {
+      await readerRequest(`/api/reader/stories/${story.id}/bookmarks/${item.id}`, { method: 'DELETE' });
+      setBookmarks(items => items.filter(saved => saved.id !== item.id));
+    } catch (err) { setError((err as Error).message); }
+  };
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
@@ -135,7 +196,8 @@ export default function App() {
       <section className="reading-top">
         <button className="quiet-button back" onClick={() => { setStory(null); setChapter(null); setError(''); }}><ArrowLeft size={15} /> Library</button>
         <button className="quiet-button story-picker" title="Browse chapters" onClick={() => setDrawer(drawer === 'chapters' ? null : 'chapters')}>{story.title}<ChevronDown size={14} /></button>
-        <button className={`quiet-button bookmark ${bookmarked ? 'active' : ''}`} title={bookmarked ? 'Remove bookmark' : 'Bookmark this chapter'} onClick={toggleBookmark}><span>{bookmarked ? '★' : '☆'}</span></button>
+        <button className="quiet-button" title="Save this place" aria-label="Save this place" disabled={bookmarkSaving} onClick={() => void saveBookmark()}><BookmarkPlus size={16} /></button>
+        <button className="quiet-button" title={`Saved places (${bookmarks.length})`} aria-label="Saved places" onClick={() => setDrawer('bookmarks')}><Bookmark size={16} /><span className="bookmark-count">{bookmarks.length}</span></button>
         <button className="quiet-button" title="Reading preferences" onClick={() => setDrawer(drawer === 'settings' ? null : 'settings')}><Settings2 size={16} /></button>
       </section>
       {chapter && <article className="article" key={chapter.id}>
@@ -147,13 +209,14 @@ export default function App() {
           <button disabled={chapterIndex >= story.chapters.length - 1} onClick={() => move(1)}><span><small>{chapterIndex >= story.chapters.length - 1 ? 'UP TO DATE' : 'NEXT CHAPTER'}</small>{story.chapters[chapterIndex + 1]?.title || 'Latest chapter'}</span><ChevronRight size={17} /></button>
         </nav>
       </article>}
-      <footer className="reader-footer"><button onClick={() => setDrawer('chapters')}>Chapter {chapter.number} of {story.chapters.length} <ChevronDown size={13} /></button><span>{Math.round(progress * 100)}%</span><div><button disabled={chapterIndex <= 0} onClick={() => move(-1)}><ArrowLeft size={14} /></button><button disabled={chapterIndex >= story.chapters.length - 1} onClick={() => move(1)}><ArrowRight size={14} /></button></div></footer>
+      <footer className="reader-footer"><button onClick={() => setDrawer('chapters')}>Chapter {chapter.number} of {story.chapters.length} <ChevronDown size={13} /></button><span>{progressError ? 'Progress not synced' : `${Math.round(progress * 100)}%`}</span><div><button disabled={chapterIndex <= 0} onClick={() => move(-1)}><ArrowLeft size={14} /></button><button disabled={chapterIndex >= story.chapters.length - 1} onClick={() => move(1)}><ArrowRight size={14} /></button></div></footer>
     </> : story ? <>
       <section className="story-intro"><button className="quiet-button back" onClick={() => { setStory(null); setChapter(null); }}><ArrowLeft size={15} /> Library</button>
         {cover && <img className="intro-cover" src={cover} alt="" />}
         <span className="overline">A STORY TO GET LOST IN</span><h1>{story.title}</h1>{story.subtitle && <h2>{story.subtitle}</h2>}<p>{story.synopsis}</p><div className="story-meta">{story.chapters.length} published chapters <span>·</span> {story.language}</div>
         <button className="begin-button" disabled={!story.chapters.length} onClick={() => void openChapter(story, story.chapters[0].id)}><BookOpen size={16} /> Begin reading <ArrowRight size={15} /></button>
         <button className="outline-button" onClick={() => setDrawer('chapters')}>Browse chapters <ChevronRight size={14} /></button>
+        <button className="outline-button" onClick={() => setDrawer('bookmarks')}><Bookmark size={14} /> Saved places ({bookmarks.length})</button>
       </section>
     </> : <>
       <section className="library-head"><div><span className="overline">PUBLISHED STORIES</span><h1>Reading room</h1></div><label className="search"><Search size={15} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Find a story" /></label></section>
@@ -164,7 +227,7 @@ export default function App() {
       <div className="library-foot"><span>esReader v{appVersion || '…'}</span><span>·</span><span>estory.fauzulazim.com</span><span>·</span><span>{stories.length} stories</span></div>
     </>}
     {error && story && <div className="inline-error"><span>{error}</span><button onClick={() => setError('')} aria-label="Dismiss"><X size={13} /></button></div>}
-    {drawer && <><button className="drawer-shade" aria-label="Close panel" onClick={() => setDrawer(null)} /><aside className="drawer"><header><h2>{drawer === 'settings' ? 'Reading appearance' : 'Chapters'}</h2><button className="quiet-button" onClick={() => setDrawer(null)} aria-label="Close"><X size={16} /></button></header>
+    {drawer && <><button className="drawer-shade" aria-label="Close panel" onClick={() => setDrawer(null)} /><aside className="drawer"><header><h2>{drawer === 'settings' ? 'Reading appearance' : drawer === 'bookmarks' ? 'Your saved places' : 'Chapters'}</h2><button className="quiet-button" onClick={() => setDrawer(null)} aria-label="Close"><X size={16} /></button></header>
       {drawer === 'settings' ? <div className="settings">
         <label>Theme<div className="theme-select">{(['dark', 'paper', 'light'] as const).map(theme => <button className={prefs.theme === theme ? 'selected' : ''} key={theme} onClick={() => updatePref('theme', theme)}>{theme === 'dark' ? <Moon size={15} /> : <Sun size={15} />}{theme === 'dark' ? 'Dark' : theme === 'paper' ? 'Paper' : 'Light'}</button>)}</div></label>
         {prefs.theme === 'dark' && <label>Editor shade <span>{prefs.tint}</span><input type="color" value={prefs.tint} onChange={event => updatePref('tint', event.target.value)} /></label>}
@@ -172,8 +235,11 @@ export default function App() {
         <label>Text size <span>{prefs.size}px</span><input type="range" min="14" max="30" value={prefs.size} onChange={event => updatePref('size', Number(event.target.value))} /></label>
         <label>Line spacing <span>{prefs.line.toFixed(1)}</span><input type="range" min="1.4" max="2.5" step="0.1" value={prefs.line} onChange={event => updatePref('line', Number(event.target.value))} /></label>
         <label>Text column <span>{prefs.width}px</span><input type="range" min="320" max="900" step="20" value={prefs.width} onChange={event => updatePref('width', Number(event.target.value))} /></label>
-        <p>Appearance and reading position are saved on this device.</p><button className="reset-button" onClick={() => setPrefs(initialPreferences)}>Reset appearance</button>
-      </div> : <div className="chapter-list">{story?.chapters.map(item => <ChapterRow key={item.id} item={item} active={item.id === chapterId} onClick={() => story && void openChapter(story, item.id)} />)}</div>}
+        <p>Appearance is saved on this device. Reading position and saved places sync to your esTory account.</p><button className="reset-button" onClick={() => setPrefs(initialPreferences)}>Reset appearance</button>
+      </div> : drawer === 'chapters' ? <div className="chapter-list">{story?.chapters.map(item => <ChapterRow key={item.id} item={item} active={item.id === chapterId} onClick={() => story && void openChapter(story, item.id)} />)}</div> : <div className="bookmark-list">{bookmarks.length ? bookmarks.map(item => {
+        const savedChapter = story?.chapters.find(chapter => chapter.id === item.chapterId);
+        return <div className="saved-bookmark" key={item.id}><button className="saved-bookmark-open" onClick={() => openBookmark(item)}><Bookmark size={15} /><span><strong>{savedChapter ? `Chapter ${savedChapter.number}: ${savedChapter.title}` : 'Saved place'}</strong><small>{item.label || `${Math.round(item.position * 100)}% through chapter`}</small></span></button><button className="quiet-button" title="Remove saved place" aria-label="Remove saved place" onClick={() => void deleteBookmark(item)}><Trash2 size={14} /></button></div>;
+      }) : <div className="bookmark-empty"><Bookmark size={20} /><strong>No saved places yet</strong><span>While reading, tap the bookmark button to save your exact place in a chapter.</span></div>}</div>}
     </aside></>}
     </>}
   </main>;
